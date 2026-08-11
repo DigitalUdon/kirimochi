@@ -42,6 +42,44 @@ class TestPreviewExporter: public QObject
         QCOMPARE(plan.segments.size(), 1);
         QCOMPARE(plan.segments.front().filePath, QStringLiteral("/path/to/video.mp4"));
     }
+
+    void buildPlan_detectsMissingAudioStream() {
+        QVector<DraftBlock> blocks;
+        DraftBlock silent;
+        silent.kind = "video";
+        silent.source_path = QFINDTESTDATA("fixtures/no_audio.mp4");
+        silent.end_ms = 1000;
+        blocks.append(silent);
+
+        QTemporaryDir archiveDir;
+        auto plan = PreviewRender::buildPlan(blocks, QDir(archiveDir.path()));
+
+        QCOMPARE(plan.segments.size(), 1);
+        QVERIFY(!plan.segments.front().hasAudio);
+    }
+
+    void buildArgs_usesAnullsrcForVideoWithoutAudio() {
+        PreviewRender::Plan plan;
+
+        PreviewRender::Segment withAudio;
+        withAudio.filePath = "/path/a.mp4";
+        withAudio.endMs = 2000; withAudio.durationMs = 2000;
+        withAudio.hasAudio = true;
+        plan.segments.append(withAudio);
+
+        PreviewRender::Segment noAudio;
+        noAudio.filePath = "/path/b.mkv";
+        noAudio.endMs = 3000; noAudio.durationMs = 3000;
+        noAudio.hasAudio = false;
+        plan.segments.append(noAudio);
+
+        const auto args = PreviewRender::buildArgs(plan, "/tmp/out.mp4");
+        const QString fc = args[args.indexOf("-filter_complex") + 1];
+
+        QVERIFY(fc.contains("[0:a]atrim"));
+        QVERIFY(!fc.contains("[1:a]atrim"));
+        QVERIFY(fc.contains("anullsrc=r=48000:cl=stereo,atrim=end=3.000[a1]"));
+    }
 };
 
 QTEST_MAIN(TestPreviewExporter)

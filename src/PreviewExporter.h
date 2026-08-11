@@ -17,6 +17,7 @@ namespace PreviewRender {
 struct Segment {
     QString filePath;
     bool isImage = false;
+    bool hasAudio = true;
     qint64 startMs = 0;
     qint64 endMs = 0;
     qint64 durationMs = 0;
@@ -35,6 +36,21 @@ struct Plan {
     int outFps = 30;
 };
 
+inline bool hasAudioStream(const QString& filePath) {
+    QProcess proc;
+    proc.start(QStringLiteral("ffprobe"),
+               QStringList{
+                   QStringLiteral("-v"), QStringLiteral("error"),
+                   QStringLiteral("-select_streams"), QStringLiteral("a"),
+                   QStringLiteral("-show_entries"), QStringLiteral("stream=index"),
+                   QStringLiteral("-of"), QStringLiteral("csv=p=0"),
+                   filePath,
+               });
+    proc.waitForFinished(5000);
+    const QByteArray output = proc.readAllStandardOutput().trimmed();
+    return !output.isEmpty();
+}
+
 inline QString msToSec(qint64 ms) {
     return QString::number(static_cast<double>(ms) / 1000.0, 'f', 3);
 }
@@ -51,17 +67,19 @@ inline Plan buildPlan(const QVector<DraftBlock>& blocks, const QDir& archiveDir)
                 b.source_path, archiveDir, QStringLiteral("video"));
             if (seg.filePath.isEmpty()) {
                 qWarning() << "preview: video not found for video_id" << b.source_path
-                           << "- block skipped";
+                            << "- block skipped";
                 continue;
             }
             seg.startMs = b.start_ms;
             seg.endMs = b.end_ms;
             seg.durationMs = b.end_ms - b.start_ms;
+            seg.hasAudio = hasAudioStream(seg.filePath);
         } else if (b.kind == QStringLiteral("video")) {
             seg.filePath = b.source_path;
             seg.startMs = b.start_ms;
             seg.endMs = b.end_ms;
             seg.durationMs = b.end_ms - b.start_ms;
+            seg.hasAudio = hasAudioStream(seg.filePath);
         } else if (b.kind == QStringLiteral("image")) {
             if (b.duration == 0) {
                 qWarning() << "preview: duration is 0 - block skipped";
@@ -112,6 +130,15 @@ inline QStringList buildArgs(const Plan& plan, const QString& outputPath) {
         const Segment& s = plan.segments[i];
         if (s.isImage) {
             fc += QStringLiteral("[%1:v]%2[v%1];").arg(i).arg(videoCommon);
+            fc += QStringLiteral("anullsrc=r=48000:cl=stereo,atrim=end=%1[a%2];")
+                      .arg(msToSec(s.durationMs))
+                      .arg(i);
+        } else if (!s.hasAudio) {
+            fc += QStringLiteral("[%1:v]trim=start=%2:end=%3,setpts=PTS-STARTPTS,%4[v%1];")
+                      .arg(i)
+                      .arg(msToSec(s.startMs))
+                      .arg(msToSec(s.endMs))
+                      .arg(videoCommon);
             fc += QStringLiteral("anullsrc=r=48000:cl=stereo,atrim=end=%1[a%2];")
                       .arg(msToSec(s.durationMs))
                       .arg(i);
